@@ -19,6 +19,10 @@ var (
 	mutex sync.Mutex
 )
 
+type MainCID struct {
+	CID string `json:"CID"`
+}
+
 type UploadRequest struct {
 	Name        string    `json:"name"`
 	Desc        string    `json:"desc"`
@@ -73,60 +77,65 @@ func (app *Config) Upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if r.FormValue("user_address") == "" {
+		app.errorJSON(w, errors.New("Invalid user address"))
+		return
+
+	}
+
 	file, _, err := r.FormFile("image")
-	if err != nil {
+	if file == nil && r.FormValue("desc") == "" {
+		app.errorJSON(w, errors.New("Request must contain either media or text"))
+		return
+	}
+
+	if err != nil && err.Error() != "http: no such file" {
 		app.errorJSON(w, errors.New("error processing file"))
 		return
 	}
-	defer file.Close()
+	var imageHash string = ""
 
-	var jsonData UploadRequest
+	if file != nil {
+		defer file.Close()
 
-	jsonData.Name = r.FormValue("name")
-	jsonData.Desc = r.FormValue("desc")
-	jsonData.UserAddress = r.FormValue("user_address")
+		log.Println("start")
 
-	// likeCountStr := r.FormValue("like_count")
-	// jsonData.LikeCount, err = strconv.ParseInt(likeCountStr, 10, 64)
-	// if err != nil {
-	// 	app.errorJSON(w, errors.New("error parsing like_count"))
-	// 	return
-	// }
+		sh := shell.NewShell("http://54.219.7.190:4000")
+		buf := new(bytes.Buffer)
+		buf.ReadFrom(file)
+		log.Println("check")
 
-	log.Println("start")
+		imageHash, err = sh.Add(buf)
+		if err != nil {
+			log.Println(err)
+			app.errorJSON(w, errors.New("error adding image to IPFS"))
 
-	sh := shell.NewShell("http://54.219.7.190:4000")
-	buf := new(bytes.Buffer)
-	buf.ReadFrom(file)
-	log.Println("check")
+		}
+		log.Println("done")
 
-	imageHash, err := sh.Add(buf)
-	if err != nil {
-		log.Println(err)
-		app.errorJSON(w, errors.New("error adding image to IPFS"))
-
+		imageHash = "http://54.219.7.190:8080/ipfs/" + imageHash
 	}
-	log.Println("done")
 
 	metadata := IPFSData{
-		Name:        jsonData.Name,
-		Description: jsonData.Desc,
-		UA:          jsonData.UserAddress,
+		Name:        "",
+		Description: r.FormValue("desc"),
+		UA:          r.FormValue("user_address"),
 		Time:        time.Now(),
 		Likes:       0,
-		IH:          "http://54.219.7.190:8080/ipfs/" + imageHash,
+		IH:          imageHash,
 	}
 	log.Println("check 22")
 
 	metadataBytes, err := json.Marshal(metadata)
 	if err != nil {
 		app.errorJSON(w, errors.New("error encoding metadata"))
+		return
 	}
 
 	cid, err := ReadCIDFromFile()
 	if err != nil {
 		app.errorJSON(w, errors.New(err.Error()))
-
+		return
 	}
 	log.Println("check 6666")
 
@@ -135,18 +144,11 @@ func (app *Config) Upload(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		fmt.Println("Error fetching existing JSON data from IPFS:", err)
 		app.errorJSON(w, errors.New(err.Error()))
+		return
 	}
 
-	// // Append a new JSON object
-	// newJSON := `{"description":"tes4444t3",
-	//             "image_hash":"4444",
-	//             "like_count":444442,
-	//             "name":"444444",
-	//             "time":"2024-04-17T06:06:25Z",
-	//             "user_address":"testaddress3"}`
 	log.Println("check 0000000009")
 
-	// Append newJSON to existingJSON array
 	updatedJSON := appendJSON(existingJSON, string(metadataBytes))
 
 	// Upload the updated JSON to IPFS
@@ -154,6 +156,7 @@ func (app *Config) Upload(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		fmt.Println("Error uploading updated JSON to IPFS:", err)
 		app.errorJSON(w, errors.New(err.Error()))
+		return
 	}
 	fmt.Println("Uploaded updated JSON to IPFS with hash:", hash)
 
@@ -176,7 +179,13 @@ func (app *Config) getMetaData(w http.ResponseWriter, r *http.Request) {
 
 	defer r.Body.Close()
 
-	url := fmt.Sprintf("https://ipfs.io/ipfs/%s", "QmWfouZB4FaEWDQaNsp2yXPmojZj8H4SkEhGdxx3F64NNA")
+	cid, err := app.getCidFromFile()
+	if err != nil {
+		app.errorJSON(w, err, http.StatusInternalServerError)
+		return
+	}
+
+	url := fmt.Sprintf("http://54.219.7.190:8080/ipfs/%s", cid)
 	fmt.Printf("URL: %s\n", url)
 
 	resp, err := http.Get(url)
@@ -191,8 +200,6 @@ func (app *Config) getMetaData(w http.ResponseWriter, r *http.Request) {
 		app.errorJSON(w, err, http.StatusInternalServerError)
 		return
 	}
-
-	fmt.Println(string(body))
 
 	var data []MetadataResponse
 	err = json.Unmarshal([]byte(body), &data)
@@ -259,7 +266,6 @@ func appendJSON(existingJSON, newJSON string) string {
 		fmt.Println("Error unmarshaling existing JSON:", err)
 		return existingJSON
 	}
-	log.Println(existingArray, " < - - - - ")
 
 	// Unmarshal new JSON object
 	var newObj IPFSData
@@ -278,43 +284,13 @@ func appendJSON(existingJSON, newJSON string) string {
 		return existingJSON
 	}
 
-	log.Println(string(updatedJSON))
-
 	return string(updatedJSON)
 }
 
 func uploadToIPFS(data string) (string, error) {
-	// Prepare the request body
-	// body := bytes.NewBufferString(data)
 
-	// // Send the HTTP request to IPFS API for adding data
-	// resp, err := http.Post(ipfsAPIURL+"/add", "text/plain", body)
-	// if err != nil {
-	// 	return "", err
-	// }
-	// defer resp.Body.Close()
-
-	// // Read the response body
-	// respBody, err := ioutil.ReadAll(resp.Body)
-	// if err != nil {
-	// 	return "", err
-	// }
-
-	// // Unmarshal the response JSON
-	// var ipfsResp IPFSResponse
-	// err = json.Unmarshal(respBody, &ipfsResp)
-	// if err != nil {
-	// 	return "", err
-	// }
-
-	// return ipfsResp.Hash, nil
 	sh := shell.NewShell("http://54.219.7.190:4000")
 
-	//
-	// Add the file to IPFS
-	//
-
-	// tsdBin, _ := json.Marshal(data)
 	reader := bytes.NewReader([]byte(data))
 
 	cid, err := sh.Add(reader)
@@ -322,7 +298,6 @@ func uploadToIPFS(data string) (string, error) {
 		fmt.Fprintf(os.Stderr, "error: %s", err)
 		return "", err
 	}
-	fmt.Printf("added %s\n", cid)
 
 	return cid, nil
 }
@@ -351,4 +326,37 @@ func WriteCIDToFile(cid string) error {
 	}
 
 	return nil
+}
+
+func (app *Config) getCIDFromFile(w http.ResponseWriter, r *http.Request) {
+	data, err := ioutil.ReadFile("mainCID.json")
+	if err != nil {
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	var mainCID MainCID
+	err = json.Unmarshal(data, &mainCID)
+	if err != nil {
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(mainCID)
+}
+
+func (app *Config) getCidFromFile() (string, error) {
+	data, err := ioutil.ReadFile("mainCID.json")
+	if err != nil {
+		return "", err
+	}
+
+	var mainCID MainCID
+	err = json.Unmarshal(data, &mainCID)
+	if err != nil {
+		return "", err
+	}
+
+	return mainCID.CID, nil
 }
