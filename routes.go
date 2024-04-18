@@ -26,5 +26,7 @@ func (app *Config) routes() http.Handler {
 
 	mux.Post("/upload", app.Upload)
 
+	mux.Get("/metadata", app.getMetaData)
+
 	return mux
 }
