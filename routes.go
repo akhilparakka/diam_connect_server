@@ -29,6 +29,7 @@ func (app *Config) routes() http.Handler {
 	mux.Post("/metadata", app.getMetaData)
 
 	mux.Post("/getCid", app.getCIDFromFile)
+	mux.Post("/add-likes-to-posts", app.addLikesToPosts)
 
 	return mux
 }

@@ -55,6 +55,7 @@ type IPFSData struct {
 	Name        string    `json:"name"`
 	Time        time.Time `json:"time"`
 	UA          string    `json:"user_address"`
+	Id          string    `json:"id"`
 }
 
 type HashRequest struct {
@@ -123,6 +124,7 @@ func (app *Config) Upload(w http.ResponseWriter, r *http.Request) {
 		Time:        time.Now(),
 		Likes:       0,
 		IH:          imageHash,
+		Id:          StringRandom(10), ///id generator ""
 	}
 	log.Println("check 22")
 
@@ -299,6 +301,8 @@ func uploadToIPFS(data string) (string, error) {
 		return "", err
 	}
 
+	log.Println(cid)
+
 	return cid, nil
 }
 
@@ -359,4 +363,75 @@ func (app *Config) getCidFromFile() (string, error) {
 	}
 
 	return mainCID.CID, nil
+}
+
+func (app *Config) addLikesToPosts(w http.ResponseWriter, r *http.Request) {
+	type likesP struct {
+		Id    string `json:"id"`
+		Count int    `json:"count"`
+	}
+	var payload likesP
+
+	err := json.NewDecoder(r.Body).Decode(&payload)
+	if err != nil {
+		app.errorJSON(w, err, http.StatusBadRequest)
+		return
+	}
+
+	defer r.Body.Close()
+	cid, err := ReadCIDFromFile()
+
+	if err != nil {
+		app.errorJSON(w, err, http.StatusInternalServerError)
+
+	}
+
+	url := fmt.Sprintf("http://54.219.7.190:8080/ipfs/%s", cid)
+	fmt.Printf("URL: %s\n", url)
+
+	resp, err := http.Get(url)
+	if err != nil {
+		app.errorJSON(w, err, http.StatusInternalServerError)
+		return
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		app.errorJSON(w, err, http.StatusInternalServerError)
+		return
+	}
+
+	var data []IPFSData
+	err = json.Unmarshal([]byte(body), &data)
+	if err != nil {
+		app.errorJSON(w, err, http.StatusInternalServerError)
+		return
+	}
+
+	// filteredData := make([]MetadataResponse, 0)
+	for i, item := range data {
+		if item.Id == payload.Id {
+			temp := item.Likes
+			log.Println(temp, payload.Count, " ooo")
+			data[i].Likes = temp + payload.Count
+		}
+	}
+
+	log.Println(data, " < === check")
+	marshalled, err := json.Marshal(data)
+	if err != nil {
+		app.errorJSON(w, err, http.StatusInternalServerError)
+		return
+	}
+	_cid, err := uploadToIPFS(string(marshalled))
+
+	err = WriteCIDToFile(_cid)
+	if err != nil {
+		app.errorJSON(w, err, http.StatusInternalServerError)
+		return
+	}
+
+	app.writeJSON(w, http.StatusOK, "like added")
+
 }
