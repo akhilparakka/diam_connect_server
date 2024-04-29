@@ -38,6 +38,7 @@ type MetadataResponse struct {
 	Time        time.Time `json:"time"`
 	LikeCount   int64     `json:"like_count"`
 	ImageHash   string    `json:"image_hash"`
+	Type        int       `json:"type"`
 }
 
 type CIDData struct {
@@ -49,13 +50,15 @@ type RequestPayload struct {
 }
 
 type IPFSData struct {
-	Description string    `json:"description"`
-	IH          string    `json:"image_hash"`
-	Likes       int       `json:"like_count"`
-	Name        string    `json:"name"`
-	Time        time.Time `json:"time"`
-	UA          string    `json:"user_address"`
-	Id          string    `json:"id"`
+	Description string         `json:"description"`
+	IH          string         `json:"image_hash"`
+	Likes       int            `json:"like_count"`
+	Name        string         `json:"name"`
+	Time        time.Time      `json:"time"`
+	UA          string         `json:"user_address"`
+	Id          string         `json:"id"`
+	Type        int            `json:"type"`
+	Mapping     map[string]int `json:"mapping"`
 }
 
 type HashRequest struct {
@@ -79,6 +82,12 @@ func (app *Config) Upload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.FormValue("user_address") == "" {
+		app.errorJSON(w, errors.New("Invalid user address"))
+		return
+
+	}
+
+	if r.FormValue("media_type") == "" {
 		app.errorJSON(w, errors.New("Invalid user address"))
 		return
 
@@ -117,6 +126,16 @@ func (app *Config) Upload(w http.ResponseWriter, r *http.Request) {
 		imageHash = "http://54.219.7.190:8080/ipfs/" + imageHash
 	}
 
+	var _type int
+
+	if r.FormValue("media_type") == "1" {
+		_type = 1
+
+	} else if r.FormValue("media_type") == "2" {
+		_type = 2
+
+	}
+
 	metadata := IPFSData{
 		Name:        "",
 		Description: r.FormValue("desc"),
@@ -125,6 +144,8 @@ func (app *Config) Upload(w http.ResponseWriter, r *http.Request) {
 		Likes:       0,
 		IH:          imageHash,
 		Id:          StringRandom(10), ///id generator ""
+		Type:        _type,
+		Mapping:     make(map[string]int),
 	}
 	log.Println("check 22")
 
@@ -367,8 +388,9 @@ func (app *Config) getCidFromFile() (string, error) {
 
 func (app *Config) addLikesToPosts(w http.ResponseWriter, r *http.Request) {
 	type likesP struct {
-		Id    string `json:"id"`
-		Count int    `json:"count"`
+		PublicKey string `json:"public_key"`
+		Id        string `json:"id"`
+		Count     int    `json:"count"`
 	}
 	var payload likesP
 
@@ -412,9 +434,18 @@ func (app *Config) addLikesToPosts(w http.ResponseWriter, r *http.Request) {
 	// filteredData := make([]MetadataResponse, 0)
 	for i, item := range data {
 		if item.Id == payload.Id {
+
+			if value, ok := item.Mapping[payload.PublicKey]; ok {
+				app.writeJSON(w, http.StatusOK, "like added !")
+				// key existapp.writeJSON(w, http.StatusOK, "like added")s in mapping, value is the corresponding value
+				log.Printf("Found key 'some_key' in mapping for item %d, value is %d", i, value)
+			}
+
 			temp := item.Likes
 			log.Println(temp, payload.Count, " ooo")
 			data[i].Likes = temp + payload.Count
+
+			data[i].Mapping[payload.PublicKey] = 1
 		}
 	}
 
@@ -432,6 +463,60 @@ func (app *Config) addLikesToPosts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	app.writeJSON(w, http.StatusOK, "like added")
+	app.writeJSON(w, http.StatusOK, "like added !")
 
+}
+
+func (app *Config) getPostFromId(w http.ResponseWriter, r *http.Request) {
+	type getPost struct {
+		PublicKey  string `json:"user_address"`
+		Image_hash string `json:"image_hash"`
+	}
+	var payload getPost
+
+	err := json.NewDecoder(r.Body).Decode(&payload)
+	if err != nil {
+		app.errorJSON(w, err, http.StatusBadRequest)
+		return
+	}
+
+	defer r.Body.Close()
+
+	cid, err := app.getCidFromFile()
+	if err != nil {
+		app.errorJSON(w, err, http.StatusInternalServerError)
+		return
+	}
+
+	url := fmt.Sprintf("http://54.219.7.190:8080/ipfs/%s", cid)
+	fmt.Printf("URL: %s\n", url)
+
+	resp, err := http.Get(url)
+	if err != nil {
+		app.errorJSON(w, err, http.StatusInternalServerError)
+		return
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		app.errorJSON(w, err, http.StatusInternalServerError)
+		return
+	}
+
+	var data []MetadataResponse
+	err = json.Unmarshal([]byte(body), &data)
+	if err != nil {
+		app.errorJSON(w, err, http.StatusInternalServerError)
+		return
+	}
+
+	filteredData := make([]MetadataResponse, 0)
+	for _, item := range data {
+		if (item.UserAddress == payload.PublicKey) && (item.ImageHash == payload.Image_hash) {
+			filteredData = append(filteredData, item)
+		}
+	}
+
+	app.writeJSON(w, http.StatusOK, filteredData)
 }
