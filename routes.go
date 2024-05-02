@@ -33,5 +33,7 @@ func (app *Config) routes() http.Handler {
 
 	mux.Post("/get-post-from-id", app.getPostFromId)
 
+	mux.Post("/get-post-from-address", app.getPostFromAddress)
+
 	return mux
 }

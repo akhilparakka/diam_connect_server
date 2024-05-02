@@ -16,7 +16,7 @@ func main() {
 	if false {
 		uploadToIPFS(`[{
 			"description": "mangneot the powerful mutant",
-			"image_hash": "http://54.219.7.190:8080/ipfs/QmVPZAuM43hecJDvXHaLKMiZmirN9PHTjW6xrPtjkpwMrq",
+			"image_hash": "https://browseipfs.diamcircle.io/ipfs/QmVPZAuM43hecJDvXHaLKMiZmirN9PHTjW6xrPtjkpwMrq",
 			"like_count": 0,
 			"name": "JOSH",
 			"time": "2024-04-18T10:59:31.79669848+05:30",

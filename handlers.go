@@ -12,6 +12,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/diamcircle/go/clients/auroraclient"
+	"github.com/diamcircle/go/keypair"
+	"github.com/diamcircle/go/network"
+	"github.com/diamcircle/go/txnbuild"
 	shell "github.com/ipfs/go-ipfs-api"
 )
 
@@ -110,7 +114,7 @@ func (app *Config) Upload(w http.ResponseWriter, r *http.Request) {
 
 		log.Println("start")
 
-		sh := shell.NewShell("http://54.219.7.190:4000")
+		sh := shell.NewShell("https://uploadipfs.diamcircle.io/")
 		buf := new(bytes.Buffer)
 		buf.ReadFrom(file)
 		log.Println("check")
@@ -123,7 +127,7 @@ func (app *Config) Upload(w http.ResponseWriter, r *http.Request) {
 		}
 		log.Println("done")
 
-		imageHash = "http://54.219.7.190:8080/ipfs/" + imageHash
+		imageHash = "https://browseipfs.diamcircle.io/ipfs/" + imageHash
 	}
 
 	var _type int
@@ -133,6 +137,9 @@ func (app *Config) Upload(w http.ResponseWriter, r *http.Request) {
 
 	} else if r.FormValue("media_type") == "2" {
 		_type = 2
+
+	} else if r.FormValue("media_type") == "3" {
+		_type = 3
 
 	}
 
@@ -208,7 +215,7 @@ func (app *Config) getMetaData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	url := fmt.Sprintf("http://54.219.7.190:8080/ipfs/%s", cid)
+	url := fmt.Sprintf("https://browseipfs.diamcircle.io/ipfs/%s", cid)
 	fmt.Printf("URL: %s\n", url)
 
 	resp, err := http.Get(url)
@@ -265,7 +272,7 @@ func ReadCIDFromFile() (string, error) {
 
 func fetchFromIPFS(cid string) (string, error) {
 	// Send HTTP GET request to IPFS API
-	resp, err := http.Get("http://54.219.7.190:8080/ipfs/" + cid)
+	resp, err := http.Get("https://browseipfs.diamcircle.io/ipfs/" + cid)
 	if err != nil {
 		return "", err
 	}
@@ -312,7 +319,7 @@ func appendJSON(existingJSON, newJSON string) string {
 
 func uploadToIPFS(data string) (string, error) {
 
-	sh := shell.NewShell("http://54.219.7.190:4000")
+	sh := shell.NewShell("https://uploadipfs.diamcircle.io/")
 
 	reader := bytes.NewReader([]byte(data))
 
@@ -400,17 +407,13 @@ func (app *Config) addLikesToPosts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	defer r.Body.Close()
 	cid, err := ReadCIDFromFile()
-
 	if err != nil {
 		app.errorJSON(w, err, http.StatusInternalServerError)
-
+		return
 	}
 
-	url := fmt.Sprintf("http://54.219.7.190:8080/ipfs/%s", cid)
-	fmt.Printf("URL: %s\n", url)
-
+	url := fmt.Sprintf("https://browseipfs.diamcircle.io/ipfs/%s", cid)
 	resp, err := http.Get(url)
 	if err != nil {
 		app.errorJSON(w, err, http.StatusInternalServerError)
@@ -431,31 +434,89 @@ func (app *Config) addLikesToPosts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// filteredData := make([]MetadataResponse, 0)
 	for i, item := range data {
 		if item.Id == payload.Id {
-
-			if value, ok := item.Mapping[payload.PublicKey]; ok {
-				app.writeJSON(w, http.StatusOK, "like added !")
-				// key existapp.writeJSON(w, http.StatusOK, "like added")s in mapping, value is the corresponding value
-				log.Printf("Found key 'some_key' in mapping for item %d, value is %d", i, value)
+			if _, ok := item.Mapping[payload.PublicKey]; ok {
+				app.writeJSON(w, http.StatusOK, "user has already liked the post!")
+				return
 			}
 
 			temp := item.Likes
-			log.Println(temp, payload.Count, " ooo")
 			data[i].Likes = temp + payload.Count
 
-			data[i].Mapping[payload.PublicKey] = 1
+			if data[i].Likes == 99 {
+				source := "SBNBAF32CLQYKVUSGLUKSHSGNKMZPYBKYEWXDL6CAAHMQWD5I3DC2ZV4"
+				client := auroraclient.DefaultTestNetClient
+
+				sourceKP := keypair.MustParseFull(source)
+
+				sourceAccountRequest := auroraclient.AccountRequest{AccountID: sourceKP.Address()}
+
+				sourceAccount, err := client.AccountDetail(sourceAccountRequest)
+				if err != nil {
+					app.errorJSON(w, err, http.StatusInternalServerError)
+					return
+				}
+
+				var Operations []txnbuild.Operation
+
+				for i := 0; i < len(data); i++ {
+					Operations = append(Operations, &txnbuild.Payment{
+						Destination: item.UA,
+						Amount:      "50",
+						Asset:       txnbuild.NativeAsset{},
+					})
+				}
+
+				tx, err := txnbuild.NewTransaction(
+					txnbuild.TransactionParams{
+						SourceAccount:        &sourceAccount,
+						IncrementSequenceNum: true,
+						BaseFee:              txnbuild.MinBaseFee,
+						Timebounds:           txnbuild.NewInfiniteTimeout(),
+						Operations:           Operations,
+					},
+				)
+
+				if err != nil {
+					app.errorJSON(w, err, http.StatusInternalServerError)
+					return
+				}
+
+				tx, err = tx.Sign(network.TestNetworkPassphrase, sourceKP)
+				if err != nil {
+					app.errorJSON(w, err, http.StatusInternalServerError)
+					return
+				}
+
+				_, err = auroraclient.DefaultTestNetClient.SubmitTransaction(tx)
+				if err != nil {
+					app.errorJSON(w, err, http.StatusInternalServerError)
+					return
+				}
+			}
+
+			if payload.Count > 0 {
+				data[i].Mapping[payload.PublicKey] = 1
+			} else if payload.Count < 0 {
+				delete(data[i].Mapping, payload.PublicKey)
+			}
+
+			break
 		}
 	}
 
-	log.Println(data, " < === check")
 	marshalled, err := json.Marshal(data)
 	if err != nil {
 		app.errorJSON(w, err, http.StatusInternalServerError)
 		return
 	}
+
 	_cid, err := uploadToIPFS(string(marshalled))
+	if err != nil {
+		app.errorJSON(w, err, http.StatusInternalServerError)
+		return
+	}
 
 	err = WriteCIDToFile(_cid)
 	if err != nil {
@@ -464,7 +525,6 @@ func (app *Config) addLikesToPosts(w http.ResponseWriter, r *http.Request) {
 	}
 
 	app.writeJSON(w, http.StatusOK, "like added !")
-
 }
 
 func (app *Config) getPostFromId(w http.ResponseWriter, r *http.Request) {
@@ -488,7 +548,7 @@ func (app *Config) getPostFromId(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	url := fmt.Sprintf("http://54.219.7.190:8080/ipfs/%s", cid)
+	url := fmt.Sprintf("https://browseipfs.diamcircle.io/ipfs/%s", cid)
 	fmt.Printf("URL: %s\n", url)
 
 	resp, err := http.Get(url)
@@ -514,6 +574,59 @@ func (app *Config) getPostFromId(w http.ResponseWriter, r *http.Request) {
 	filteredData := make([]MetadataResponse, 0)
 	for _, item := range data {
 		if (item.UserAddress == payload.PublicKey) && (item.ImageHash == payload.Image_hash) {
+			filteredData = append(filteredData, item)
+		}
+	}
+
+	app.writeJSON(w, http.StatusOK, filteredData)
+}
+
+func (app *Config) getPostFromAddress(w http.ResponseWriter, r *http.Request) {
+	type getPost struct {
+		PublicKey string `json:"user_address"`
+	}
+	var payload getPost
+
+	err := json.NewDecoder(r.Body).Decode(&payload)
+	if err != nil {
+		app.errorJSON(w, err, http.StatusBadRequest)
+		return
+	}
+
+	defer r.Body.Close()
+
+	cid, err := app.getCidFromFile()
+	if err != nil {
+		app.errorJSON(w, err, http.StatusInternalServerError)
+		return
+	}
+
+	url := fmt.Sprintf("https://browseipfs.diamcircle.io/ipfs/%s", cid)
+	fmt.Printf("URL: %s\n", url)
+
+	resp, err := http.Get(url)
+	if err != nil {
+		app.errorJSON(w, err, http.StatusInternalServerError)
+		return
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		app.errorJSON(w, err, http.StatusInternalServerError)
+		return
+	}
+
+	var data []MetadataResponse
+	err = json.Unmarshal([]byte(body), &data)
+	if err != nil {
+		app.errorJSON(w, err, http.StatusInternalServerError)
+		return
+	}
+
+	filteredData := make([]MetadataResponse, 0)
+	for _, item := range data {
+		if item.UserAddress == payload.PublicKey {
 			filteredData = append(filteredData, item)
 		}
 	}
