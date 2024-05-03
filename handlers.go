@@ -114,7 +114,7 @@ func (app *Config) Upload(w http.ResponseWriter, r *http.Request) {
 
 		log.Println("start")
 
-		sh := shell.NewShell("https://uploadipfs.diamcircle.io/")
+		sh := shell.NewShell("https://uploadipfs.diamcircle.io")
 		buf := new(bytes.Buffer)
 		buf.ReadFrom(file)
 		log.Println("check")
@@ -319,7 +319,7 @@ func appendJSON(existingJSON, newJSON string) string {
 
 func uploadToIPFS(data string) (string, error) {
 
-	sh := shell.NewShell("https://uploadipfs.diamcircle.io/")
+	sh := shell.NewShell("https://uploadipfs.diamcircle.io")
 
 	reader := bytes.NewReader([]byte(data))
 
