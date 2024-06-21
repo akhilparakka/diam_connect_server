@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -78,6 +81,49 @@ func (app *Config) Check(w http.ResponseWriter, r *http.Request) {
 	app.writeJSON(w, http.StatusAccepted, payload)
 }
 
+func uploadData(token string, uid string, file multipart.File, fileName string) error {
+	url := "http://10.0.0.15:3001/v1/upload-data"
+
+	payload := new(bytes.Buffer)
+	writer := multipart.NewWriter(payload)
+	_ = writer.WriteField("uid", uid)
+	part, err := writer.CreateFormFile("files", fileName)
+	if err != nil {
+		return err
+	}
+	_, err = io.Copy(part, file)
+	if err != nil {
+		return err
+	}
+	writer.Close()
+
+	req, err := http.NewRequest("POST", url, payload)
+	if err != nil {
+		return err
+	}
+
+	req.Header.Add("Accept", "*/*")
+	req.Header.Add("User-Agent", "Thunder Client (https://www.thunderclient.com)")
+	req.Header.Add("Authorization", "Bearer "+token)
+	req.Header.Add("Content-Type", writer.FormDataContentType())
+
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+
+	body, err := ioutil.ReadAll(res.Body)
+	if err != nil {
+		return err
+	}
+
+	fmt.Println(res)
+	fmt.Println(string(body))
+
+	return nil
+}
+
 func (app *Config) Upload(w http.ResponseWriter, r *http.Request) {
 	err := r.ParseMultipartForm(32 << 20)
 	if err != nil {
@@ -85,19 +131,19 @@ func (app *Config) Upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if r.FormValue("user_address") == "" {
+	userAddress := r.FormValue("user_address")
+	if userAddress == "" {
 		app.errorJSON(w, errors.New("Invalid user address"))
 		return
-
 	}
 
-	if r.FormValue("media_type") == "" {
-		app.errorJSON(w, errors.New("Invalid user address"))
+	mediaType := r.FormValue("media_type")
+	if mediaType == "" {
+		app.errorJSON(w, errors.New("Invalid media type"))
 		return
-
 	}
 
-	file, _, err := r.FormFile("image")
+	file, fileHeader, err := r.FormFile("image")
 	if file == nil && r.FormValue("desc") == "" {
 		app.errorJSON(w, errors.New("Request must contain either media or text"))
 		return
@@ -123,7 +169,7 @@ func (app *Config) Upload(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			log.Println(err)
 			app.errorJSON(w, errors.New("error adding image to IPFS"))
-
+			return
 		}
 		log.Println("done")
 
@@ -132,25 +178,26 @@ func (app *Config) Upload(w http.ResponseWriter, r *http.Request) {
 
 	var _type int
 
-	if r.FormValue("media_type") == "1" {
+	switch mediaType {
+	case "1":
 		_type = 1
-
-	} else if r.FormValue("media_type") == "2" {
+	case "2":
 		_type = 2
-
-	} else if r.FormValue("media_type") == "3" {
+	case "3":
 		_type = 3
-
+	default:
+		app.errorJSON(w, errors.New("Invalid media type"))
+		return
 	}
 
 	metadata := IPFSData{
 		Name:        "",
 		Description: r.FormValue("desc"),
-		UA:          r.FormValue("user_address"),
+		UA:          userAddress,
 		Time:        time.Now(),
 		Likes:       0,
 		IH:          imageHash,
-		Id:          StringRandom(10), ///id generator ""
+		Id:          StringRandom(10),
 		Type:        _type,
 		Mapping:     make(map[string]int),
 	}
@@ -169,8 +216,7 @@ func (app *Config) Upload(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Println("check 6666")
 
-	// Retrieve existing JSON data from IPFS
-	existingJSON, err := fetchFromIPFS(cid) //QmZrXqJR7zuzxwhZyo1Sr92kwY1HmyeYyKqT96rxuPcFcq
+	existingJSON, err := fetchFromIPFS(cid)
 	if err != nil {
 		fmt.Println("Error fetching existing JSON data from IPFS:", err)
 		app.errorJSON(w, errors.New(err.Error()))
@@ -181,7 +227,6 @@ func (app *Config) Upload(w http.ResponseWriter, r *http.Request) {
 
 	updatedJSON := appendJSON(existingJSON, string(metadataBytes))
 
-	// Upload the updated JSON to IPFS
 	hash, err := uploadToIPFS(updatedJSON)
 	if err != nil {
 		fmt.Println("Error uploading updated JSON to IPFS:", err)
@@ -191,11 +236,68 @@ func (app *Config) Upload(w http.ResponseWriter, r *http.Request) {
 	fmt.Println("Uploaded updated JSON to IPFS with hash:", hash)
 
 	WriteCIDToFile(hash)
+
+	token, err := getBearerToken()
+	if err != nil {
+		app.errorJSON(w, errors.New("failed to get bearer token"))
+		return
+	}
+
+	if file != nil {
+		_, err = file.Seek(0, io.SeekStart) // Reset the file pointer to the beginning
+		if err != nil {
+			app.errorJSON(w, errors.New("error resetting file pointer"))
+			return
+		}
+		err = uploadData(token, userAddress, file, fileHeader.Filename)
+		if err != nil {
+			app.errorJSON(w, errors.New("failed to upload data"))
+			return
+		}
+	}
+
 	app.writeJSON(w, http.StatusOK, map[string]interface{}{
 		"status":        true,
 		"metadata_hash": hash,
 	})
+}
 
+func getBearerToken() (string, error) {
+	url := "http://10.0.0.15:3001/v1/login"
+	payload := strings.NewReader("{ \"userName\":\"diamRoot\", \"mpin\":\"95c21b00cad15f9b1357dafc3bbd8495\" }")
+
+	req, err := http.NewRequest("POST", url, payload)
+	if err != nil {
+		return "", err
+	}
+
+	req.Header.Add("Accept", "*/*")
+	req.Header.Add("User-Agent", "Thunder Client (https://www.thunderclient.com)")
+	req.Header.Add("Content-Type", "application/json")
+
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer res.Body.Close()
+
+	body, err := ioutil.ReadAll(res.Body)
+	if err != nil {
+		return "", err
+	}
+
+	var response map[string]interface{}
+	err = json.Unmarshal(body, &response)
+	if err != nil {
+		return "", err
+	}
+
+	token, ok := response["token"].(string)
+	if !ok {
+		return "", errors.New("invalid token response")
+	}
+
+	return token, nil
 }
 func (app *Config) getMetaData(w http.ResponseWriter, r *http.Request) {
 
